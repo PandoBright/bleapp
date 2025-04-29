@@ -1,21 +1,18 @@
-// src/componentes/MapComponent.js
-import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 const MapComponent = () => {
+  const [loading, setLoading] = useState(true);
   const latitude = 3.4142959;
   const longitude = -76.5320044;
 
-  const mapHTML = `
+  const mapHTML = useMemo(() => `
     <!DOCTYPE html>
     <html>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link
-          rel="stylesheet"
-          href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
-        />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
         <style>
           html, body { margin: 0; padding: 0; height: 100%; }
           #map { height: 100%; width: 100%; }
@@ -25,29 +22,36 @@ const MapComponent = () => {
         <div id="map"></div>
         <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
         <script>
-          var map = L.map('map').setView([${latitude}, ${longitude}], 18);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
-          }).addTo(map);
-          L.marker([${latitude}, ${longitude}]).addTo(map)
-            .bindPopup('Ubicación')
-            .openPopup();
+          document.addEventListener("DOMContentLoaded", function() {
+            var map = L.map('map').setView([${latitude}, ${longitude}], 18);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+            }).addTo(map);
+            L.marker([${latitude}, ${longitude}]).addTo(map)
+              .bindPopup('Ubicación Actual')
+              .openPopup();
+          });
         </script>
       </body>
     </html>
-  `;
+  `, [latitude, longitude]);
 
   return (
     <View style={styles.mapContainer}>
+      {loading && <ActivityIndicator size="large" color="tomato" style={styles.loader} />}
       <WebView
         originWhitelist={['*']}
-        source={{
-          uri: 'data:text/html;charset=utf-8,' + encodeURIComponent(mapHTML),
-        }}
+        source={{ html: mapHTML }}
         style={styles.webview}
         javaScriptEnabled={true}
         domStorageEnabled={true}
-        mixedContentMode='always'
+        mixedContentMode="always"
+        onLoadStart={() => setLoading(true)}
+        onLoadEnd={() => setLoading(false)}
+        onError={() => {
+          setLoading(false);
+          Alert.alert("Error", "No se pudo cargar el mapa.");
+        }}
       />
     </View>
   );
@@ -57,12 +61,16 @@ export default MapComponent;
 
 const styles = StyleSheet.create({
   mapContainer: {
-    height: '100%',
-    width: '100%',
-    borderWidth: 2,
-    borderColor: 'red',
+    flex: 1,
   },
   webview: {
     flex: 1,
+  },
+  loader: {
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    marginLeft: -25,
+    marginTop: -25,
   },
 });
