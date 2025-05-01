@@ -25,7 +25,7 @@ const MapComponent = () => {
           document.addEventListener("DOMContentLoaded", function() {
             var map = L.map('map').setView([${latitude}, ${longitude}], 18);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-              attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+              attribution: 'Map data © <a href="https://penstreetmap.org">OpenStreetMap</a> contributors'
             }).addTo(map);
             L.marker([${latitude}, ${longitude}]).addTo(map)
               .bindPopup('Ubicación Actual')
