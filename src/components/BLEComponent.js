@@ -1,3 +1,4 @@
+// BLEComponent_dynamic.js
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -9,27 +10,29 @@ import {
   Alert,
   TouchableOpacity,
   StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { BleManager } from 'react-native-ble-plx';
-import { Buffer } from 'buffer'; // 👈 importante para decodificar base64
-
-const SERVICE_UUID = '12345678-1234-1234-1234-1234567890ab'; // 👈 cambia aquí
-const CHARACTERISTIC_UUID = 'abcd1234-ab12-cd34-ef56-1234567890ab'; // 👈 cambia aquí
+import { Buffer } from 'buffer'; // para decodificar base64
 
 const BLEComponent = () => {
   const [devices, setDevices] = useState([]);
   const [connectedDevices, setConnectedDevices] = useState([]);
-  const [lastValue, setLastValue] = useState(null); // 👈 valor que notificará el ESP32
+  const [lastValue, setLastValue] = useState(null);
+  const [isScanning, setIsScanning] = useState(false);
   const bleManager = useRef(new BleManager()).current;
+  const subscriptionsRef = useRef({}); // { deviceId: [sub1, sub2, ...] }
 
   useEffect(() => {
     requestPermissions();
-
     return () => {
+      // Detener escaneo
       bleManager.stopDeviceScan();
+      // Limpiar suscripciones y desconectar dispositivos
+      connectedDevices.forEach(device => disconnectDevice(device));
       bleManager.destroy();
     };
-  }, []);
+  }, [connectedDevices]);
 
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -40,112 +43,157 @@ const BLEComponent = () => {
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADVERTISE,
         ]);
-
-        if (
-          granted['android.permission.ACCESS_FINE_LOCATION'] !== PermissionsAndroid.RESULTS.GRANTED ||
-          granted['android.permission.BLUETOOTH_SCAN'] !== PermissionsAndroid.RESULTS.GRANTED ||
-          granted['android.permission.BLUETOOTH_CONNECT'] !== PermissionsAndroid.RESULTS.GRANTED
-        ) {
-          Alert.alert('Permisos requeridos', 'Se necesitan permisos para escanear dispositivos.');
+        const ok = Object.values(granted).every(
+          status => status === PermissionsAndroid.RESULTS.GRANTED
+        );
+        if (!ok) {
+          Alert.alert('Permisos requeridos', 'Necesitas permitir BLE para continuar.');
         }
-      } catch (error) {
-        console.error('Error al solicitar permisos:', error);
+      } catch (err) {
+        console.error('Error solicitando permisos:', err);
       }
     }
   };
 
   const scanDevices = () => {
     setDevices([]);
-    const foundDevices = new Set();
+    setIsScanning(true);
+    const found = new Set();
 
-    bleManager.startDeviceScan(null, null, (error, device) => {
+    bleManager.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
       if (error) {
-        Alert.alert('Error en el escaneo', error.message);
+        Alert.alert('Error de escaneo', error.message);
+        setIsScanning(false);
         return;
       }
-      if (device && device.name && !foundDevices.has(device.id)) {
-        foundDevices.add(device.id);
-        setDevices((prevDevices) => [...prevDevices, device]);
+      if (device && !found.has(device.id)) {
+        found.add(device.id);
+        setDevices(old => [...old, device]);
       }
     });
 
     setTimeout(() => {
       bleManager.stopDeviceScan();
-      Alert.alert('Escaneo finalizado', 'Se detuvo el escaneo de dispositivos.');
+      setIsScanning(false);
+      Alert.alert('Escaneo finalizado', 'Parado el escaneo de dispositivos.');
     }, 10000);
   };
 
-  const connectToDevice = async (device) => {
+  const connectAndDiscoverAll = async (device) => {
     try {
-      console.log(`Conectando a ${device.name}...`);
-      const connectedDevice = await bleManager.connectToDevice(device.id);
-      await connectedDevice.discoverAllServicesAndCharacteristics();
+      const d = await bleManager.connectToDevice(device.id);
+      await d.discoverAllServicesAndCharacteristics();
 
-      // **Suscribirse para recibir notificaciones**
-      connectedDevice.monitorCharacteristicForService(
-        SERVICE_UUID,
-        CHARACTERISTIC_UUID,
-        (error, characteristic) => {
-          if (error) {
-            console.error('Error en monitor:', error);
-            return;
+      // Inicializar array de suscripciones para este dispositivo
+      subscriptionsRef.current[d.id] = [];
+
+      // Obtener todos los servicios
+      const services = await d.services();
+      for (const svc of services) {
+        // Para cada servicio, obtener características
+        const chars = await d.characteristicsForService(svc.uuid);
+        for (const ch of chars) {
+          // Leer valor si es legible
+          if (ch.isReadable) {
+            const read = await d.readCharacteristicForService(svc.uuid, ch.uuid);
+            const buf = Buffer.from(read.value, 'base64');
+            console.log(`Leer [${svc.uuid}][${ch.uuid}]:`, buf.toString('hex'));
           }
-          const valueBase64 = characteristic?.value;
-          if (valueBase64) {
-            const buffer = Buffer.from(valueBase64, 'base64');
-            const numero = buffer.readUInt32LE(0);
-            console.log(`Notificación recibida: ${numero}`);
-            setLastValue(numero); // 👈 Actualizamos el valor mostrado
+          // Suscribir si es notifiable
+          if (ch.isNotifiable) {
+            const sub = d.monitorCharacteristicForService(
+              svc.uuid,
+              ch.uuid,
+              (err, char) => {
+                if (err) {
+                  console.error('Monitor error', err);
+                  return;
+                }
+                if (char?.value) {
+                  const bufN = Buffer.from(char.value, 'base64');
+                  console.log(`Notif [${svc.uuid}][${ch.uuid}]:`, bufN);
+                  setLastValue(bufN.readUIntLE(0, bufN.length));
+                }
+              }
+            );
+            subscriptionsRef.current[d.id].push(sub);
           }
         }
-      );
+      }
 
-      setConnectedDevices((prevDevices) => [...prevDevices, connectedDevice]);
-      Alert.alert('Conectado', `Conectado a ${device.name}`);
-    } catch (error) {
-      Alert.alert('Error al conectar', error.message);
+      setConnectedDevices(old => [...old, d]);
+      Alert.alert('Conectado', `Conectado a ${device.name ?? 'Sin nombre'}`);
+    } catch (err) {
+      Alert.alert('Error conexión', err.message);
+    }
+  };
+
+  const disconnectDevice = async (device) => {
+    try {
+      // Quitar suscripciones
+      const subs = subscriptionsRef.current[device.id] || [];
+      subs.forEach(sub => sub.remove());
+      delete subscriptionsRef.current[device.id];
+
+      // Cancelar conexión
+      await device.cancelConnection();
+      setConnectedDevices(old => old.filter(d => d.id !== device.id));
+      Alert.alert('Desconectado', `${device.name ?? device.id} desconectado.`);
+    } catch (err) {
+      console.error('Error al desconectar:', err);
     }
   };
 
   const sections = [
-    { title: 'Dispositivos Conectados', data: connectedDevices },
-    { title: 'Dispositivos Disponibles', data: devices },
+    { title: 'Conectados', data: connectedDevices },
+    { title: 'Disponibles', data: devices },
   ];
 
   return (
-    <View style={styles.bleContainer}>
-      <Text style={styles.title}>Escaneo de Dispositivos BLE</Text>
-      <Button title="Escanear" onPress={scanDevices} />
+    <View style={styles.container}>
+      <Text style={styles.title}>BLE Scan</Text>
+      <Button
+        title={isScanning ? 'Escaneando...' : 'Escanear BLE'}
+        onPress={scanDevices}
+        disabled={isScanning}
+      />
+      {isScanning && <ActivityIndicator style={{ marginTop: 8 }} />}
+
       {lastValue !== null && (
-        <View style={styles.valueContainer}>
-          <Text style={styles.lastValue}>Último valor recibido: {lastValue}</Text>
-        </View>
+        <Text style={styles.lastValue}>Último valor: {lastValue}</Text>
       )}
+
       <SectionList
         sections={sections}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item, section }) => {
-          if (section.title === 'Dispositivos Conectados') {
-            return (
-              <Text style={styles.connectedDevice}>
-                ✅ {item.name || 'Dispositivo'} ({item.id})
-              </Text>
-            );
-          }
-          return (
-            <TouchableOpacity
-              onPress={() => connectToDevice(item)}
-              style={styles.deviceButton}
-            >
-              <Text>
-                {item.name} ({item.id})
-              </Text>
-            </TouchableOpacity>
-          );
-        }}
+        keyExtractor={item => item.id}
         renderSectionHeader={({ section: { title } }) => (
-          <Text style={styles.subtitle}>{title}</Text>
+          <Text style={styles.header}>{title}</Text>
         )}
+        renderItem={({ item, section }) =>
+          section.title === 'Conectados' ? (
+            <View style={styles.connectedRow}>
+              <Text style={styles.connected}>✅ {item.name ?? 'Sin nombre'}</Text>
+              <Button title="Desconectar" onPress={() => disconnectDevice(item)} />
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.device}
+              onPress={() => connectAndDiscoverAll(item)}
+            >
+              <Text>{item.name ?? 'Sin nombre'}</Text>
+              {item.serviceUUIDs?.length > 0 && (
+                <Text style={styles.subInfo}>
+                  Serv: {item.serviceUUIDs.join(', ')}
+                </Text>
+              )}
+              {item.manufacturerData && (
+                <Text style={styles.subInfo}>
+                  Manu: {Buffer.from(item.manufacturerData, 'base64').toString('hex')}
+                </Text>
+              )}
+            </TouchableOpacity>
+          )
+        }
         contentContainerStyle={{ paddingBottom: 20 }}
       />
     </View>
@@ -155,37 +203,22 @@ const BLEComponent = () => {
 export default BLEComponent;
 
 const styles = StyleSheet.create({
-  bleContainer: {
-    flex: 1,
-    padding: 10,
+  container: { flex: 1, padding: 16 },
+  title: { fontSize: 20, textAlign: 'center', marginBottom: 12 },
+  header: { fontSize: 18, fontWeight: '600', marginTop: 16 },
+  device: {
+    padding: 12,
+    backgroundColor: '#e0f7fa',
+    marginVertical: 4,
+    borderRadius: 8,
   },
-  title: {
-    fontSize: 18,
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  subtitle: {
-    marginTop: 20,
-    marginBottom: 5,
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  connectedDevice: {
-    color: 'green',
-    paddingVertical: 5,
-  },
-  deviceButton: {
-    padding: 10,
-    backgroundColor: '#3ddd',
-    marginVertical: 5,
-  },
-  valueContainer: {
-    marginTop: 20,
+  connectedRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingVertical: 4,
   },
-  lastValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: 'blue',
-  },
+  connected: { color: 'green' },
+  lastValue: { fontSize: 18, textAlign: 'center', marginVertical: 12, color: 'blue' },
+  subInfo: { fontSize: 12, color: '#555' },
 });

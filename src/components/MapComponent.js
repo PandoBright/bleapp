@@ -1,11 +1,33 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { View, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';
+import * as Location from 'expo-location';
 
 const MapComponent = () => {
   const [loading, setLoading] = useState(true);
-  const latitude = 3.4142959;
-  const longitude = -76.5320044;
+  const [coords, setCoords] = useState({ latitude: 3.4142959, longitude: -76.5320044 });
+
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permiso denegado', 'Se requiere acceso a la ubicación para mostrar el mapa.');
+        return;
+      }
+
+      try {
+        const location = await Location.getCurrentPositionAsync({});
+        setCoords({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        });
+      } catch (error) {
+        Alert.alert('Error', 'No se pudo obtener la ubicación del dispositivo.');
+      }
+    })();
+  }, []);
+
+  const { latitude, longitude } = coords;
 
   const mapHTML = useMemo(() => `
     <!DOCTYPE html>
@@ -25,7 +47,7 @@ const MapComponent = () => {
           document.addEventListener("DOMContentLoaded", function() {
             var map = L.map('map').setView([${latitude}, ${longitude}], 18);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-              attribution: 'Map data © <a href="https://penstreetmap.org">OpenStreetMap</a> contributors'
+              attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
             }).addTo(map);
             L.marker([${latitude}, ${longitude}]).addTo(map)
               .bindPopup('Ubicación Actual')
@@ -43,8 +65,8 @@ const MapComponent = () => {
         originWhitelist={['*']}
         source={{ html: mapHTML }}
         style={styles.webview}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
+        javaScriptEnabled
+        domStorageEnabled
         mixedContentMode="always"
         onLoadStart={() => setLoading(true)}
         onLoadEnd={() => setLoading(false)}
@@ -67,9 +89,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   loader: {
-    position: "absolute",
-    top: "50%",
-    left: "50%",
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
     marginLeft: -25,
     marginTop: -25,
   },
